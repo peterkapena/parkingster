@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:location/location.dart';
@@ -16,18 +17,29 @@ class MapPage extends StatefulWidget {
 class _MapStatePage extends State<MapPage> {
   GoogleMapController? _mapController;
   LocationData? _currentLocation;
-  Location _locationService = Location();
-  LatLng _initialCameraPosition =
-      LatLng(-33.918861, 18.423300); // Default to Cape Town
+  final _locationService = Location();
+  final _initialCameraPosition =
+      const LatLng(-33.918861, 18.423300); // Default to Cape Town
   final FlutterTts flutterTts = FlutterTts();
   final String googleMapsApiKey = Config.googleMapsApiKey;
   final Set<Polyline> _polylines = {};
   final Set<Marker> _markers = {};
-  TextEditingController _destinationController = TextEditingController();
+  final TextEditingController _destinationController = TextEditingController();
   List<String> _suggestions = [];
-  FocusNode _focusNode = FocusNode();
+  final FocusNode _focusNode = FocusNode();
 // Define a controller for the non-editable TextField to show the current location
-  TextEditingController _currentLocationController = TextEditingController();
+  final TextEditingController _currentLocationController =
+      TextEditingController();
+  String _currentLocationName = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _getUserLocation();
+    _destinationController.addListener(_onSearchChanged);
+
+    _destinationController.addListener(_onSearchChanged);
+  }
 
   Future<void> _reverseGeocodeLocation(
       double latitude, double longitude) async {
@@ -42,29 +54,32 @@ class _MapStatePage extends State<MapPage> {
         setState(() {
           _currentLocationController.text =
               result['results'][0]['formatted_address'];
+          _currentLocationName = result['results'][0]['formatted_address'];
         });
       }
     } else {
-      print("Failed to fetch address: ${response.body}");
+      if (kDebugMode) {
+        print("Failed to fetch address: ${response.body}");
+      }
     }
   }
 
   Future<void> _getUserLocation() async {
-    bool _serviceEnabled;
-    PermissionStatus _permissionGranted;
+    bool serviceEnabled;
+    PermissionStatus permissionGranted;
 
-    _serviceEnabled = await _locationService.serviceEnabled();
-    if (!_serviceEnabled) {
-      _serviceEnabled = await _locationService.requestService();
-      if (!_serviceEnabled) {
+    serviceEnabled = await _locationService.serviceEnabled();
+    if (!serviceEnabled) {
+      serviceEnabled = await _locationService.requestService();
+      if (!serviceEnabled) {
         return;
       }
     }
 
-    _permissionGranted = await _locationService.hasPermission();
-    if (_permissionGranted == PermissionStatus.denied) {
-      _permissionGranted = await _locationService.requestPermission();
-      if (_permissionGranted != PermissionStatus.granted) {
+    permissionGranted = await _locationService.hasPermission();
+    if (permissionGranted == PermissionStatus.denied) {
+      permissionGranted = await _locationService.requestPermission();
+      if (permissionGranted != PermissionStatus.granted) {
         return;
       }
     }
@@ -88,15 +103,6 @@ class _MapStatePage extends State<MapPage> {
         ),
       ));
     }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _getUserLocation();
-    _destinationController.addListener(_onSearchChanged);
-
-    _destinationController.addListener(_onSearchChanged);
   }
 
   void _onSearchChanged() {
@@ -123,7 +129,9 @@ class _MapStatePage extends State<MapPage> {
             .toList();
       });
     } else {
-      print("Failed to fetch suggestions: ${response.body}");
+      if (kDebugMode) {
+        print("Failed to fetch suggestions: ${response.body}");
+      }
     }
   }
 
@@ -149,15 +157,19 @@ class _MapStatePage extends State<MapPage> {
 
           setState(() {
             _markers.clear();
-            _markers
-                .add(Marker(markerId: MarkerId("destination"), position: end));
+            _markers.add(
+                Marker(markerId: const MarkerId("destination"), position: end));
           });
         }
       } else {
-        print("No results found");
+        if (kDebugMode) {
+          print("No results found");
+        }
       }
     } else {
-      print("Failed to fetch place details: ${response.body}");
+      if (kDebugMode) {
+        print("Failed to fetch place details: ${response.body}");
+      }
     }
   }
 
@@ -177,7 +189,7 @@ class _MapStatePage extends State<MapPage> {
         setState(() {
           _polylines.clear();
           _polylines.add(Polyline(
-            polylineId: PolylineId("route"),
+            polylineId: const PolylineId("route"),
             points: points,
             color: Colors.blue,
             width: 5,
@@ -193,7 +205,9 @@ class _MapStatePage extends State<MapPage> {
             "Head towards your destination. Follow the blue line for directions.");
       }
     } else {
-      print("Failed to fetch directions: ${response.body}");
+      if (kDebugMode) {
+        print("Failed to fetch directions: ${response.body}");
+      }
     }
   }
 
@@ -274,7 +288,7 @@ class _MapStatePage extends State<MapPage> {
         // Optionally, update marker to represent current location
         setState(() {
           _markers.add(Marker(
-            markerId: MarkerId("current_location"),
+            markerId: const MarkerId("current_location"),
             position: LatLng(locationData.latitude!, locationData.longitude!),
             icon:
                 BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
@@ -291,7 +305,12 @@ class _MapStatePage extends State<MapPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        appBar: AppBar(),
+        appBar: AppBar(
+          title: Text(
+            _currentLocationName,
+            style: const TextStyle(fontSize: 13),
+          ),
+        ),
         body: Column(
           children: [
             Padding(
@@ -299,40 +318,23 @@ class _MapStatePage extends State<MapPage> {
               child: Column(
                 children: [
                   TextField(
-                    controller: _currentLocationController,
-                    readOnly: true, // Makes the TextField non-editable
-                    decoration: InputDecoration(
-                      prefixIcon: IconButton(
-                        onPressed: () {
-                          _getUserLocation();
-                        },
-                        icon: Icon(Icons.location_searching_rounded),
-                      ),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-
-                  SizedBox(height: 10), // Add some spacing between fields
-
-                  const SizedBox(height: 10), // Add some spacing between fields
-                  TextField(
                     controller: _destinationController,
                     focusNode: _focusNode,
                     decoration: InputDecoration(
-                      prefixIcon: Icon(Icons.location_pin),
+                      prefixIcon: const Icon(Icons.location_pin),
                       suffixIcon: IconButton(
                           onPressed: () {
                             setState(() {
                               _destinationController.text = '';
                             });
                           },
-                          icon: Icon(Icons.clear)),
+                          icon: const Icon(Icons.clear)),
                       hintText: "Enter destination",
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                     ),
                   ),
                   if (_suggestions.isNotEmpty && _focusNode.hasFocus)
-                    Container(
+                    SizedBox(
                       height: 150.0,
                       child: ListView.builder(
                         itemCount: _suggestions.length,
@@ -375,8 +377,8 @@ class _MapStatePage extends State<MapPage> {
         floatingActionButton: _destinationController.text.isNotEmpty
             ? FloatingActionButton.extended(
                 onPressed: _startNavigation,
-                label: Text('Start Navigation'),
-                icon: Icon(Icons.navigation),
+                label: const Text('Start Navigation'),
+                icon: const Icon(Icons.navigation),
               )
             : null);
   }

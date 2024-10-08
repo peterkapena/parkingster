@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:parkingster/api/graphql_config.dart';
+import 'package:parkingster/map/map.dart';
 import 'package:parkingster/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_notifier.dart';
-import 'root.dart';
 import 'package:provider/provider.dart';
 
 void main() async {
@@ -48,7 +48,7 @@ class MyApp extends StatelessWidget {
           home: ValueListenableBuilder<bool>(
             valueListenable: authNotifier,
             builder: (context, isLoggedIn, child) {
-              return const Root();
+              return const MapPage();
             },
           ),
         );

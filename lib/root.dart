@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:parkingster/drawer.dart';
-import 'package:parkingster/widgets/map_sample.dart';
+import 'package:parkingster/map/map.dart';
 
 class Root extends StatefulWidget {
   const Root({super.key});
@@ -15,7 +15,7 @@ class _RootState extends State<Root> {
     return Scaffold(
       drawer: const AppDrawer(),
       appBar: AppBar(),
-      body: const MapSample(),
+      body: const MapPage(),
     );
   }
 }

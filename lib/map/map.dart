@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:graphql_flutter/graphql_flutter.dart';
 import 'package:location/location.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -31,6 +34,10 @@ class _MapStatePage extends State<MapPage> {
   final TextEditingController _currentLocationController =
       TextEditingController();
   String _currentLocationName = '';
+  var _durationInHours = 0;
+  bool _isNavigating = false;
+  StreamSubscription<LocationData>? _locationSubscription;
+  String? _reservedBayAddress;
 
   @override
   void initState() {
@@ -160,6 +167,12 @@ class _MapStatePage extends State<MapPage> {
             _markers.add(
                 Marker(markerId: const MarkerId("destination"), position: end));
           });
+
+          // Format destination as required: "latitude, longitude"
+          String formattedDestination = '$lat, $lng';
+
+          // Fetch available parking bays near the destination
+          _fetchAvailableBays(formattedDestination);
         }
       } else {
         if (kDebugMode) {
@@ -170,6 +183,191 @@ class _MapStatePage extends State<MapPage> {
       if (kDebugMode) {
         print("Failed to fetch place details: ${response.body}");
       }
+    }
+  }
+
+  Future<void> _fetchAvailableBays(String destination) async {
+    const query = r'''
+  query GetAvailableBays($destination: String!) {
+    getAvailableBays(destination: $destination) {
+      bayCount
+      latitude
+      longitude
+      parkingSpaceId
+    }
+  }
+  ''';
+
+    final variables = {
+      "destination": destination,
+    };
+
+    final result = await GraphQLProvider.of(context).value.query(
+          QueryOptions(document: gql(query), variables: variables),
+        );
+
+    if (result.hasException) {
+      if (kDebugMode) {
+        print("GraphQL Exception: ${result.exception.toString()}");
+      }
+    } else {
+      final availableBays = result.data?['getAvailableBays'] ?? [];
+
+      if (availableBays.isEmpty) {
+        // Show snackbar if no parking bays are available
+        // ignore: use_build_context_synchronously
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "No monitored parking spaces found near your destination. The max distance is 500m.",
+            ),
+            duration: Duration(seconds: 4),
+          ),
+        );
+        return; // Exit the method as there are no available bays
+      }
+
+      List<Map<String, dynamic>> baysWithNames = [];
+      for (var bay in availableBays) {
+        String address = await _getLocationName(
+          bay['latitude'],
+          bay['longitude'],
+        );
+        baysWithNames.add({
+          'parkingSpaceId': bay['parkingSpaceId'],
+          'bayCount': bay['bayCount'],
+          'address': address,
+        });
+      }
+      _showAvailableBaysBottomSheet(baysWithNames);
+    }
+  }
+
+  Future<String> _getLocationName(double latitude, double longitude) async {
+    final String url =
+        'https://maps.googleapis.com/maps/api/geocode/json?latlng=$latitude,$longitude&key=$googleMapsApiKey';
+
+    final response = await http.get(Uri.parse(url));
+
+    if (response.statusCode == 200) {
+      final result = json.decode(response.body);
+      if (result['results'].isNotEmpty) {
+        return result['results'][0]['formatted_address'];
+      }
+    }
+    return 'Unknown Location';
+  }
+
+  void _showAvailableBaysBottomSheet(
+    List<Map<String, dynamic>> availableBays,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                "Tap on a parking option below to reserve your bay.",
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).primaryColor,
+                ),
+              ),
+            ),
+            Expanded(
+              child: ListView.separated(
+                separatorBuilder: (context, i) => const Divider(),
+                itemCount: availableBays.length,
+                itemBuilder: (context, index) {
+                  final bay = availableBays[index];
+                  return ListTile(
+                    title: Text("Parking Space ID: ${bay['parkingSpaceId']}"),
+                    subtitle: Text(
+                      'Available Bays: ${bay['bayCount']} • Address: ${bay['address']}',
+                    ),
+                    trailing: const Icon(Icons.arrow_forward, color: Colors.blue),
+                    onTap: () {
+                      Navigator.pop(context); // Close the bottom sheet
+                      _createBooking(bay['parkingSpaceId']);
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _createBooking(String parkingSpaceId) async {
+    const mutation = '''
+  mutation CreateBooking(\$bookingData: BookingInput!) {
+    createBooking(bookingData: \$bookingData) {
+      bayNumber
+      geoLocation {
+        latitude
+        longitude
+      }
+    }
+  }
+  ''';
+
+    final bookingData = {
+      "bookingData": {
+        "userId":
+            "user123", // Replace this with actual user ID from context/auth.
+        "parkingSpaceId": parkingSpaceId,
+        "durationInHours":
+            _durationInHours, // Use the dynamically calculated duration
+      }
+    };
+
+    final result = await GraphQLProvider.of(context).value.mutate(
+          MutationOptions(document: gql(mutation), variables: bookingData),
+        );
+
+    if (result.hasException) {
+      if (kDebugMode) {
+        print("GraphQL Exception: ${result.exception.toString()}");
+      }
+    } else {
+      // Booking is successful
+      if (kDebugMode) {
+        print("Booking successful: ${result.data?['createBooking']}");
+      }
+
+      // Get geoLocation from the result
+      double latitude =
+          result.data!['createBooking']['geoLocation']['latitude'];
+      double longitude =
+          result.data!['createBooking']['geoLocation']['longitude'];
+
+      // Fetch the friendly address of the reserved bay
+      String friendlyAddress = await _getLocationName(latitude, longitude);
+
+      setState(() {
+        // Update destination controller with the friendly address
+        _destinationController.text = friendlyAddress;
+
+        // Store the reserved bay address to display on the UI
+        _reservedBayAddress =
+            '$friendlyAddress. Bay number: ${result.data!['createBooking']['bayNumber']}';
+      });
+
+      // Alternatively, show a snackbar as a toast-like notification
+      // ignore: use_build_context_synchronously
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text("Booking confirmed! Reserved parking at $friendlyAddress"),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -186,6 +384,13 @@ class _MapStatePage extends State<MapPage> {
             result['routes'][0]['overview_polyline']['points'];
         List<LatLng> points = _decodePolyline(encodedPolyline);
 
+        // Extract journey duration from the response
+        int journeyDurationInMinutes = result['routes'][0]['legs'][0]
+                ['duration']['value'] ~/
+            60; // Convert seconds to minutes
+        int durationInHours = (journeyDurationInMinutes / 60).ceil() +
+            1; // Convert to hours and add 1 extra hour
+
         setState(() {
           _polylines.clear();
           _polylines.add(Polyline(
@@ -194,6 +399,9 @@ class _MapStatePage extends State<MapPage> {
             color: Colors.blue,
             width: 5,
           ));
+
+          // Store the duration for use in booking
+          _durationInHours = durationInHours;
         });
 
         // Fit the entire polyline into the screen
@@ -269,12 +477,17 @@ class _MapStatePage extends State<MapPage> {
   Future<void> _startNavigation() async {
     if (_currentLocation == null) return;
 
+    setState(() {
+      _isNavigating = true;
+    });
+
     // Speak out the initial directions
     await flutterTts
         .speak("Starting navigation. Follow the blue line for directions.");
 
     // Listen for location updates and move the camera accordingly
-    _locationService.onLocationChanged.listen((LocationData locationData) {
+    _locationSubscription =
+        _locationService.onLocationChanged.listen((LocationData locationData) {
       if (_mapController != null) {
         _mapController!.animateCamera(
           CameraUpdate.newCameraPosition(
@@ -302,84 +515,159 @@ class _MapStatePage extends State<MapPage> {
     });
   }
 
+  void _stopNavigation({bool arrived = false}) {
+    if (_locationSubscription != null) {
+      _locationSubscription?.cancel();
+      _locationSubscription = null;
+    }
+
+    setState(() {
+      _isNavigating = false;
+      _polylines.clear(); // Clear the navigation route
+
+      // Remove the current location marker (blue icon)
+      _markers.removeWhere(
+          (marker) => marker.markerId == const MarkerId("current_location"));
+
+      if (arrived) {
+        _reservedBayAddress = null; // Clear reserved bay information
+      }
+    });
+
+    // Provide feedback to the user
+    String message =
+        arrived ? "You have arrived at your destination!" : "Navigation ended.";
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        appBar: AppBar(
-          title: Text(
-            _currentLocationName,
-            style: const TextStyle(fontSize: 13),
-          ),
+      appBar: AppBar(
+        title: Text(
+          _currentLocationName,
+          style: const TextStyle(fontSize: 13),
         ),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Column(
-                children: [
-                  TextField(
-                    controller: _destinationController,
-                    focusNode: _focusNode,
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.location_pin),
-                      suffixIcon: IconButton(
-                          onPressed: () {
-                            setState(() {
-                              _destinationController.text = '';
-                            });
-                          },
-                          icon: const Icon(Icons.clear)),
-                      hintText: "Enter destination",
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                  if (_suggestions.isNotEmpty && _focusNode.hasFocus)
-                    SizedBox(
-                      height: 150.0,
-                      child: ListView.builder(
-                        itemCount: _suggestions.length,
-                        itemBuilder: (context, index) {
-                          return ListTile(
-                            title: Text(_suggestions[index]),
-                            onTap: () {
-                              _destinationController.text = _suggestions[index];
-                              setState(() {
-                                _suggestions = [];
-                              });
-                              _focusNode.unfocus();
-                              _searchPlace();
-                            },
-                          );
-                        },
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Column(
+              children: [
+                // Display reserved bay information, if available
+                if (_reservedBayAddress != null)
+                  Card(
+                    color: Colors.lightBlueAccent.withOpacity(0.2),
+                    elevation: 5,
+                    margin: const EdgeInsets.symmetric(vertical: 10.0),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.local_parking, color: Colors.blue),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              "Reserved Parking at: $_reservedBayAddress",
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: GoogleMap(
-                initialCameraPosition: CameraPosition(
-                  target: _initialCameraPosition,
-                  zoom: 10,
+                  ),
+                TextField(
+                  controller: _destinationController,
+                  focusNode: _focusNode,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.location_pin),
+                    suffixIcon: IconButton(
+                      onPressed: () {
+                        setState(() {
+                          _destinationController.text = '';
+                        });
+                      },
+                      icon: const Icon(Icons.clear),
+                    ),
+                    hintText: "Enter destination",
+                    border: const OutlineInputBorder(),
+                  ),
                 ),
-                myLocationEnabled: true,
-                markers: _markers,
-                polylines: _polylines,
-                onMapCreated: (GoogleMapController controller) {
-                  _mapController = controller;
-                  _getUserLocation();
-                },
-              ),
+                if (_suggestions.isNotEmpty && _focusNode.hasFocus)
+                  SizedBox(
+                    height: 150.0,
+                    child: ListView.builder(
+                      itemCount: _suggestions.length,
+                      itemBuilder: (context, index) {
+                        return ListTile(
+                          title: Text(_suggestions[index]),
+                          onTap: () {
+                            _destinationController.text = _suggestions[index];
+                            setState(() {
+                              _suggestions = [];
+                            });
+                            _focusNode.unfocus();
+                            _searchPlace();
+                          },
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ),
-          ],
-        ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
-        floatingActionButton: _destinationController.text.isNotEmpty
-            ? FloatingActionButton.extended(
-                onPressed: _startNavigation,
-                label: const Text('Start Navigation'),
-                icon: const Icon(Icons.navigation),
-              )
-            : null);
+          ),
+          Expanded(
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: _initialCameraPosition,
+                zoom: 10,
+              ),
+              myLocationEnabled: true,
+              markers: _markers,
+              polylines: _polylines,
+              onMapCreated: (GoogleMapController controller) {
+                _mapController = controller;
+                _getUserLocation();
+              },
+            ),
+          ),
+        ],
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
+      floatingActionButton: _destinationController.text.isNotEmpty
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingActionButton.extended(
+                  onPressed: _isNavigating
+                      ? () => _stopNavigation(arrived: true)
+                      : _startNavigation,
+                  label: Text(
+                      _isNavigating ? 'I Have Arrived' : 'Start Navigation'),
+                  icon: Icon(
+                      _isNavigating ? Icons.check_circle : Icons.navigation),
+                ),
+                if (_isNavigating) const SizedBox(height: 10),
+                if (_isNavigating)
+                  FloatingActionButton.extended(
+                    onPressed: () => _stopNavigation(),
+                    label: const Text('Cancel Navigation'),
+                    icon: const Icon(Icons.cancel),
+                    backgroundColor: Colors.redAccent,
+                  ),
+              ],
+            )
+          : null,
+    );
   }
 }
